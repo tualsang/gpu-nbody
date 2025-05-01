@@ -1,17 +1,21 @@
-CXXFLAGS=-O3
+NVCC = nvcc
+NVCCFLAGS = -O3 -arch=sm_60
+CXXFLAGS = -O3
 
+# Main executable target - compile directly from .cpp
 nbody: nbody.cpp
-	g++ -O3 nbody.cpp -o nbody
+	$(NVCC) $(NVCCFLAGS) -x cu nbody.cpp -o nbody
 
-solar.out: nbody
-	date
-	./nbody planet 200 5000000 10000 > solar.out # maybe a minutes
-	date
+# Run specific simulation with requested parameters
+simulation.out: nbody
+	@echo "Starting n-body simulation..."
+	@date
+	./nbody 100000 0.01 50 10 > simulation.out
+	@date
+	@echo "Simulation complete."
 
-solar.pdf: solar.out
-	python3 plot.py solar.out solar.pdf 1000 
+# Clean up compiled files and outputs
+clean:
+	rm -f nbody nbody.cu *.out
 
-random.out: nbody
-	date
-	./nbody 1000 1 10000 100 > random.out # maybe 5 minutes
-	date
+.PHONY: clean
