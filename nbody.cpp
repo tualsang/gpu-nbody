@@ -196,32 +196,6 @@ void reset_force(simulation& s) {
   }
 }
 
-__global__ void updateForceKernel(double* mass, double* x, double* y, double* z, double* fx, double* fy, double* fz, size_t nbpart, double G, double softening) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx >= nbpart) return; // thread is NOT within bounds
-
-  double dx, dy, dz, dist_sq, F, norm;
-  for (size_t j = 0; j < nbpart; ++j) {
-      if (idx != j) {
-        dx = x[j] - x[idx]; 
-        dy = y[j] - y[idx];
-        dz = z[j] - z[idx];
-          dist_sq = dx * dx + dy * dy + dz * dz;
-          F = G * mass[idx] * mass[j] / (dist_sq + softening);
-
-          norm = sqrt(dist_sq);
-          dx /= norm;
-          dy /= norm;
-          dz /= norm;
-
-          // Apply force
-          fx[idx] += dx * F;
-          fy[idx] += dy * F;
-          fz[idx] += dz * F;
-      }
-  }
-}
-
 /**
  * Kernel to update positions and velocities of all particles
  * Each thread handles one particle
