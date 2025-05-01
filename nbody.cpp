@@ -308,7 +308,6 @@ int main(int argc, char* argv[]) {
   size_t nbstep = std::atol(argv[3]);
   size_t printevery = std::atol(argv[4]);
   
-  
   simulation s(1);
 
   //parse command line
@@ -320,9 +319,9 @@ int main(int argc, char* argv[]) {
     } else {
       std::string inputparam = argv[1];
       if (inputparam == "planet") {
-	init_solar(s);
+        init_solar(s);
       } else{
-	load_from_file(s, inputparam);
+        load_from_file(s, inputparam);
       }
     }    
   }
@@ -353,23 +352,52 @@ int main(int argc, char* argv[]) {
   cudaMemset(d_fz, 0, s.nbpart * sizeof(double));
 
   // Configure kernel launch parameters
-  int numBlocks = (s.nbpart + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  int threadsPerBlock = BLOCK_SIZE;
+  int numBlocks = (s.nbpart + threadsPerBlock - 1) / threadsPerBlock;
   double softening = 0.1;
-
-  // Print initial state
-  dump_state(s);
+  
+  // For optimal GPU utilization
+  cudaDeviceProp deviceProp;
+  cudaGetDeviceProperties(&deviceProp, 0);
+  printf("CUDA Device: %s\n", deviceProp.name);
+  printf("Compute capability: %d.%d\n", deviceProp.major, deviceProp.minor);
+  printf("Max threads per block: %d\n", deviceProp.maxThreadsPerBlock);
+  printf("Multiprocessor count: %d\n", deviceProp.multiProcessorCount);
 
   // Main simulation loop
+  printf("Starting simulation with %zu particles for %zu steps...\n", s.nbpart, nbstep);
+  printf("Output will be printed every %zu steps\n", printevery);
+  
+  // Print initial state
+  printf("Initial state (step 0):\n");
+  dump_state(s);
+  
+  // Record timing
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, 0);
+  
+  // Main time-stepping loop
   for (size_t step = 1; step <= nbstep; step++) {
-    // Calculate forces
-    updateForceKernel<<<numBlocks, BLOCK_SIZE>>>(d_mass, d_x, d_y, d_z, d_fx, d_fy, d_fz, s.nbpart, G, softening);
+    //Calculate gravitational forces between all particles
+    updateForceKernel<<<numBlocks, threadsPerBlock>>>(
+      d_mass, d_x, d_y, d_z, d_fx, d_fy, d_fz, s.nbpart, G, softening);
     
-    // Update positions and velocities
-    updatePositionVelocityKernel<<<numBlocks, BLOCK_SIZE>>>(d_mass, d_x, d_y, d_z, d_vx, d_vy, d_vz, d_fx, d_fy, d_fz, s.nbpart, dt);
+    //Update velocities and positions based on calculated forces
+    updatePositionVelocityKernel<<<numBlocks, threadsPerBlock>>>(
+      d_mass, d_x, d_y, d_z, d_vx, d_vy, d_vz, d_fx, d_fy, d_fz, s.nbpart, dt);
     
-    // Copy data back only when needed for output
+    // Check for CUDA errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+      fprintf(stderr, "CUDA Error during step %zu: %s\n", step, cudaGetErrorString(err));
+      break;
+    }
+    
+    //At regular intervals, copy data back and print state
     if (step % printevery == 0) {
-      // Copy all data back from device to host
+      // Copy all data back from device to host for output
       cudaMemcpy(s.x.data(), d_x, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
       cudaMemcpy(s.y.data(), d_y, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
       cudaMemcpy(s.z.data(), d_z, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
@@ -380,10 +408,18 @@ int main(int argc, char* argv[]) {
       cudaMemcpy(s.fy.data(), d_fy, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
       cudaMemcpy(s.fz.data(), d_fz, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
       
-      // Print state
+      // Print progress and state
+      printf("Step %zu of %zu (%.1f%%):\n", step, nbstep, step * 100.0 / nbstep);
       dump_state(s);
     }
   }
+  
+  // Record end time and calculate total time
+  cudaEventRecord(stop, 0);
+  cudaEventSynchronize(stop);
+  float elapsedTime;
+  cudaEventElapsedTime(&elapsedTime, start, stop);
+  printf("Simulation completed in %.2f milliseconds\n", elapsedTime);
   
   // If the last step wasn't printed, copy back and print final state
   if (nbstep % printevery != 0) {
@@ -398,6 +434,7 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(s.fy.data(), d_fy, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
     cudaMemcpy(s.fz.data(), d_fz, s.nbpart * sizeof(double), cudaMemcpyDeviceToHost);
     
+    printf("Final state (step %zu):\n", nbstep);
     dump_state(s);
   }
 
@@ -412,8 +449,6 @@ int main(int argc, char* argv[]) {
   cudaFree(d_fx);
   cudaFree(d_fy);
   cudaFree(d_fz);
-  
-  //dump_state(s);  
 
   return 0;
 }
