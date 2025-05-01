@@ -3,8 +3,15 @@
 #include <random>
 #include <cmath>
 
+// Change file extension to .cu for CUDA compilation
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+// Define CUDA kernel qualifier if compiling with C++
+#ifndef __CUDACC__
+#define __global__
+#define __device__
+#endif
 
 #define BLOCK_SIZE 256
 
