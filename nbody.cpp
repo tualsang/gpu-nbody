@@ -3,15 +3,8 @@
 #include <random>
 #include <cmath>
 
-// Change file extension to .cu for CUDA compilation
 #include <cuda.h>
 #include <cuda_runtime.h>
-
-// Define CUDA kernel qualifier if compiling with C++
-#ifndef __CUDACC__
-#define __global__
-#define __device__
-#endif
 
 #define BLOCK_SIZE 256
 
@@ -143,19 +136,12 @@ void update_force(simulation& s, size_t from, size_t to) {
   s.fz[to] += dz*F;
 }
 
-void reset_force(simulation& s) {
-  for (size_t i=0; i<s.nbpart; ++i) {
-    s.fx[i] = 0.;
-    s.fy[i] = 0.;
-    s.fz[i] = 0.;
-  }
-}
-
 /**
  * Kernel to calculate gravitational forces between all particles
  * Each thread handles one particle
  */
 __global__ void updateForceKernel(double* mass, double* x, double* y, double* z, double* fx, double* fy, double* fz, size_t nbpart, double G, double softening) {
+  // Get global thread ID
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= nbpart) return; // Check bounds
   
@@ -164,26 +150,75 @@ __global__ void updateForceKernel(double* mass, double* x, double* y, double* z,
   fy[idx] = 0.0;
   fz[idx] = 0.0;
   
-  double dx, dy, dz, dist_sq, F, norm;
+  // Cache this particle's position
+  double pos_x = x[idx];
+  double pos_y = y[idx];
+  double pos_z = z[idx];
+  double m = mass[idx];
+  
+  // Calculate force from all other particles
+  double f_x = 0.0, f_y = 0.0, f_z = 0.0;
+  
   for (size_t j = 0; j < nbpart; ++j) {
     if (idx != j) {  // Skip self-interaction
-      dx = x[j] - x[idx];
-      dy = y[j] - y[idx];
-      dz = z[j] - z[idx];
+      // Calculate distance vector
+      double dx = x[j] - pos_x;
+      double dy = y[j] - pos_y;
+      double dz = z[j] - pos_z;
       
-      dist_sq = dx*dx + dy*dy + dz*dz + softening;
-      F = G * mass[idx] * mass[j] / dist_sq;
+      // Calculate squared distance and avoid division by zero
+      double dist_sq = dx*dx + dy*dy + dz*dz + softening;
       
-      norm = sqrt(dist_sq);
-      dx /= norm;
-      dy /= norm;
-      dz /= norm;
+      // Calculate gravitational force magnitude: G * m1 * m2 / r^2
+      double force_mag = G * m * mass[j] / dist_sq;
       
-      // Apply force
-      fx[idx] += dx * F;
-      fy[idx] += dy * F;
-      fz[idx] += dz * F;
+      // Normalize the direction vector
+      double inv_dist = rsqrt(dist_sq);  // Fast CUDA intrinsic for 1/sqrt()
+      
+      // Accumulate force components
+      f_x += dx * inv_dist * force_mag;
+      f_y += dy * inv_dist * force_mag;
+      f_z += dz * inv_dist * force_mag;
     }
+  }
+  
+  // Write accumulated forces back to global memory
+  fx[idx] = f_x;
+  fy[idx] = f_y;
+  fz[idx] = f_z;
+}
+
+void reset_force(simulation& s) {
+  for (size_t i=0; i<s.nbpart; ++i) {
+    s.fx[i] = 0.;
+    s.fy[i] = 0.;
+    s.fz[i] = 0.;
+  }
+}
+
+__global__ void updateForceKernel(double* mass, double* x, double* y, double* z, double* fx, double* fy, double* fz, size_t nbpart, double G, double softening) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= nbpart) return; // thread is NOT within bounds
+
+  double dx, dy, dz, dist_sq, F, norm;
+  for (size_t j = 0; j < nbpart; ++j) {
+      if (idx != j) {
+        dx = x[j] - x[idx]; 
+        dy = y[j] - y[idx];
+        dz = z[j] - z[idx];
+          dist_sq = dx * dx + dy * dy + dz * dz;
+          F = G * mass[idx] * mass[j] / (dist_sq + softening);
+
+          norm = sqrt(dist_sq);
+          dx /= norm;
+          dy /= norm;
+          dz /= norm;
+
+          // Apply force
+          fx[idx] += dx * F;
+          fy[idx] += dy * F;
+          fz[idx] += dz * F;
+      }
   }
 }
 
